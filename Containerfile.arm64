@@ -139,11 +139,23 @@ RUN pacman -Syu --noconfirm \
 # group membership survives the realignment, so it costs nothing per session.
 # A dedicated group rather than `wheel`, so "writes the toolchain" stays
 # separable from "becomes root".
+#
+# `builder` is a nameplate for uid ${WRAP_UID}, not an account anyone logs into
+# (nologin, no home created). Everything the image ships under /opt/mise,
+# /home/user and /workspace is laid down by uid ${WRAP_UID}, but wrap moves the
+# `user` account off that uid at session creation to match the host workspace
+# owner. Without a second passwd entry the uid stops resolving and the toolchain
+# shows up as `UNKNOWN` in the guest. It is created after `user` on purpose:
+# while both hold the uid (in this image and in wrap's build layers) the live
+# account wins the getpwuid lookup, and `builder` only surfaces once `user` has
+# vacated the uid.
 # ---------------------------------------------------------------------------
 RUN groupadd -g "${WRAP_GID}" "${WRAP_USER_NAME}" 2>/dev/null || true \
  && groupadd -g "${WRAP_TOOLCHAIN_GID}" "${WRAP_TOOLCHAIN_GROUP}" 2>/dev/null || true \
  && useradd -m -d "${WRAP_USER_HOME}" -u "${WRAP_UID}" -g "${WRAP_GID}" \
       -s /bin/zsh "${WRAP_USER_NAME}" 2>/dev/null || true \
+ && useradd -o -u "${WRAP_UID}" -g "${WRAP_TOOLCHAIN_GROUP}" -M -d /opt/mise \
+      -s /usr/bin/nologin builder 2>/dev/null || true \
  && usermod -aG wheel,"${WRAP_TOOLCHAIN_GROUP}" "${WRAP_USER_NAME}" \
  && printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "${WRAP_USER_NAME}" \
       > /etc/sudoers.d/10-wrap-user \
