@@ -63,7 +63,9 @@ ENV HOME=/root \
 ENV WRAP_UID=1000 \
     WRAP_GID=1000 \
     WRAP_USER_NAME=user \
-    WRAP_USER_HOME=/home/user
+    WRAP_USER_HOME=/home/user \
+    WRAP_TOOLCHAIN_GID=900 \
+    WRAP_TOOLCHAIN_GROUP=toolchain
 
 # Arch's own geo mirror: it is what wrap's default network allowlist permits
 # (.pkgbuild.com), so `sudo pacman -S` keeps working inside the VM.
@@ -128,17 +130,30 @@ RUN pacman -Syu --noconfirm \
 # /opt/mise is owned by that uid too: the toolchain lives at a HOME-independent
 # path, but `user` must be able to `mise use`/`mise install` into it without
 # sudo. root still reads it fine (a+rX).
+#
+# The toolchain is additionally group-owned by `toolchain` and group-writable,
+# with `user` a member. That keeps it writable after wrap realigns the guest
+# uid/gid to the host workspace owner, WITHOUT a recursive chown at session
+# creation: chowning the tree costs one overlay copy-up per file (measured
+# ~11 ms x 28.5k files = ~5 min of cold start on macOS/arm64). Supplementary
+# group membership survives the realignment, so it costs nothing per session.
+# A dedicated group rather than `wheel`, so "writes the toolchain" stays
+# separable from "becomes root".
 # ---------------------------------------------------------------------------
 RUN groupadd -g "${WRAP_GID}" "${WRAP_USER_NAME}" 2>/dev/null || true \
+ && groupadd -g "${WRAP_TOOLCHAIN_GID}" "${WRAP_TOOLCHAIN_GROUP}" 2>/dev/null || true \
  && useradd -m -d "${WRAP_USER_HOME}" -u "${WRAP_UID}" -g "${WRAP_GID}" \
       -s /bin/zsh "${WRAP_USER_NAME}" 2>/dev/null || true \
- && usermod -aG wheel "${WRAP_USER_NAME}" \
+ && usermod -aG wheel,"${WRAP_TOOLCHAIN_GROUP}" "${WRAP_USER_NAME}" \
  && printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "${WRAP_USER_NAME}" \
       > /etc/sudoers.d/10-wrap-user \
  && printf '%%wheel ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/11-wrap-wheel \
  && chmod 0440 /etc/sudoers.d/10-wrap-user /etc/sudoers.d/11-wrap-wheel \
  && visudo -c \
- && chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}" /workspace /opt/mise \
+ && chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}" /workspace \
+ && chown -R "${WRAP_UID}:${WRAP_TOOLCHAIN_GID}" /opt/mise \
+ && chmod -R g+rwX /opt/mise \
+ && find /opt/mise -type d -exec chmod g+s {} + \
  && chmod 0755 "${WRAP_USER_HOME}"
 
 # ---------------------------------------------------------------------------
