@@ -399,12 +399,13 @@ async fn build_layer(
     builder = if let Some(snapshot) = parent {
         builder.from_snapshot(snapshot)
     } else {
-        // The image stage only runs on first build or --rebuild; both want the
-        // registry's current `latest`, not a stale local tag. Always re-checks
-        // the manifest and only fetches layers whose digests changed.
+        // The image stage only runs on first build or --rebuild; both normally
+        // want the registry's current `latest`, not a stale local tag, which is
+        // why `pull_policy` defaults to Always. Set it to `IfMissing` to run
+        // from a locally built image that exists only in the msb cache.
         builder
             .image_with(|i| i.oci(cfg.image.as_str()).root_disk(ROOT_DISK_GIB.gib()))
-            .pull_policy(PullPolicy::Always)
+            .pull_policy(image_pull_policy(cfg))
     };
     builder = apply_secrets(builder, secrets);
 
@@ -1085,6 +1086,14 @@ fn apply_secrets(
     builder
 }
 
+fn image_pull_policy(cfg: &config::Config) -> PullPolicy {
+    match cfg.pull_policy {
+        config::PullPolicy::Always => PullPolicy::Always,
+        config::PullPolicy::IfMissing => PullPolicy::IfMissing,
+        config::PullPolicy::Never => PullPolicy::Never,
+    }
+}
+
 fn session_policy(cfg: &config::Config) -> Result<NetworkPolicy, microsandbox::MicrosandboxError> {
     let (allow_domains, allow_suffixes) = classify_hosts(&cfg.network.allow_host);
     let (deny_domains, deny_suffixes) = classify_hosts(&cfg.network.deny_host);
@@ -1295,6 +1304,21 @@ mod tests {
         assert_ne!(a, c);
         assert!(a.starts_with("wrap-"));
         assert_eq!(a.len(), "wrap-".len() + 16);
+    }
+
+    #[test]
+    fn image_pull_policy_follows_config() {
+        // The mapping is what lets a local-only image tag boot at all; a wrong
+        // arm on either side sends the image stage back to the registry.
+        let cfg: config::Config =
+            serde_yaml::from_str(include_str!("../resources/default.yml")).unwrap();
+        assert_eq!(image_pull_policy(&cfg), PullPolicy::Always);
+
+        let cfg: config::Config = serde_yaml::from_str("pull_policy: IfMissing\n").unwrap();
+        assert_eq!(image_pull_policy(&cfg), PullPolicy::IfMissing);
+
+        let cfg: config::Config = serde_yaml::from_str("pull_policy: Never\n").unwrap();
+        assert_eq!(image_pull_policy(&cfg), PullPolicy::Never);
     }
 
     #[test]
