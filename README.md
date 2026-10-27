@@ -136,8 +136,9 @@ The desktop image bakes in websockify (a small venv on the system Python) so noV
 `ghcr.io/tobi/wrap:desktop` (`Containerfile.desktop`) layers a headless desktop on the base image:
 
 - X display `:1` (Xvfb, 1280x800) running a minimal XFCE — navy backdrop, one bottom dock with Chrome, Thunar and Terminal — autostarted from login shells; `wrap-desktop start|stop|status|url`.
-- One persistent Google Chrome on that desktop (no window until agent-browser or the dock opens one) with CDP on `127.0.0.1:9222`. The setup speedrun is baked in system-wide: managed policies (`/etc/opt/chrome/policies/managed`) and `initial_preferences` disable sign-in, sync, default-browser, privacy-sandbox, promo, password/autofill and keyring prompts, so neither agents nor humans ever see first-run UI.
-- `agent-browser` installed on demand through mise's native backend (no npm/Node bootstrap) and preconfigured (`~/.agent-browser/config.json`, `cdp: 9222`) to attach to that Chrome: `agent-browser open https://example.com` acts in the same browser you see over VNC, so you can watch, log in, or take over and hand back. A project `./agent-browser.json` still overrides (drop `cdp` for an isolated headed Chrome).
+- One persistent Google Chrome on that desktop (no window until agent-browser or the dock opens one) with CDP on `127.0.0.1:9222`, forwarded to guest interfaces on `9223` so DevTools or Playwright outside the guest can attach once you publish it. The setup speedrun is baked in system-wide: managed policies (`/etc/opt/chrome/policies/managed`) and `initial_preferences` disable sign-in, sync, default-browser, privacy-sandbox, promo, password/autofill and keyring prompts, so neither agents nor humans ever see first-run UI.
+- `agent-browser` installed on demand through mise's native backend (no npm/Node bootstrap) and preconfigured (`~/.agent-browser/config.json`, `cdp: 9222`) to attach to that Chrome: `agent-browser open https://example.com` acts in the same browser you see over VNC, so you can watch, log in, or take over and hand back. A project `./agent-browser.json` still overrides (drop `cdp` for an isolated headed Chrome). WebMCP is on: tools a page registers on `document.modelContext` show up in `agent-browser webmcp list` and run with `agent-browser webmcp invoke`.
+- Chrome launch flags live in `~/.config/chrome-flags.conf`, one per line, falling back to `/etc/wrap/chrome-flags.conf`. The defaults are `--no-sandbox` and `--enable-features=WebMCPTesting,DevToolsWebMCPSupport`; Chrome honors only the last `--enable-features`, so keep both features in any line that replaces it.
 - View it over noVNC at `http://127.0.0.1:6080/vnc.html` (or VNC on 5900, no password) by publishing the ports in `~/.config/wrap/config.yml`; the host side is loopback-only.
 
 Use it from wrap:
@@ -158,10 +159,11 @@ Or standalone:
 
 ```bash
 docker run -d -p 127.0.0.1:6080:6080 ghcr.io/tobi/wrap:desktop   # desktop + chrome
+docker run -d -p 127.0.0.1:9222:9223 ghcr.io/tobi/wrap:desktop   # + CDP at host 127.0.0.1:9222
 docker run -it ghcr.io/tobi/wrap:desktop                         # shell as `user`; desktop autostarts
 ```
 
-Under Docker's default seccomp profile Chrome cannot create the user namespaces its sandbox needs, so the launcher detects that and starts Chrome with `--no-sandbox` (logged in `/tmp/wrap-desktop-1000/desktop.log`). Add `--security-opt seccomp=unconfined` to keep the sandbox, or set `WRAP_DESKTOP_CHROME_SANDBOX=1` (always on) or `0` (always off). As the container command, `wrap-desktop run` respawns crashed pieces every `WRAP_DESKTOP_SUPERVISE_SECONDS` (default 30, `0` disables) and stops promptly on `docker stop`.
+Chrome runs with `--no-sandbox` by default because Docker's default seccomp profile blocks the user namespaces its sandbox needs. Under a runtime that allows them (a microVM, or `--security-opt seccomp=unconfined`), drop that line from `chrome-flags.conf` to keep the sandbox. `WRAP_DESKTOP_CDP_PUBLIC_PORT` moves the CDP forward (empty or `0` disables it). As the container command, `wrap-desktop run` respawns crashed pieces every `WRAP_DESKTOP_SUPERVISE_SECONDS` (default 30, `0` disables) and stops promptly on `docker stop`.
 
 Build the images with BuildKit (`docker buildx`) or podman: Docker's legacy builder silently writes the `RUN` heredoc scripts as empty files. `make test-images` checks this.
 

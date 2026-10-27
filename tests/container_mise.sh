@@ -38,6 +38,22 @@ else
   MISE_OFFLINE=1 wrap-desktop start --quiet
   MISE_OFFLINE=1 agent-browser open about:blank
   ok 'native agent-browser attaches to the preconfigured shared Chrome desktop'
+
+  page="$(mktemp -d)"
+  cat > "$page/index.html" <<'EOF'
+<script>
+document.modelContext.registerTool({name: "add", description: "add two numbers",
+  inputSchema: {type: "object", properties: {a: {type: "number"}, b: {type: "number"}}},
+  execute: async ({a, b}) => ({content: [{type: "text", text: String(a + b)}]})});
+</script>
+EOF
+  (cd "$page" && exec /usr/bin/python -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1) &
+  server=$!
+  for _ in $(seq 20); do curl -fsS -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.2; done
+  agent-browser open http://127.0.0.1:8765/
+  agent-browser webmcp invoke add --params '{"a":2,"b":3}' | grep -q '"5"'
+  kill "$server"
+  ok 'pages can register WebMCP tools that agent-browser invokes'
 fi
 
 # A local asdf fixture proves automatic upgrades without depending on two

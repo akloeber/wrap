@@ -15,6 +15,12 @@ trap '"$engine" rm -f "$id" >/dev/null 2>&1 || true' EXIT
 done; exit 1'
 ok 'chrome CDP comes up under the default security profile'
 
+ip="$("$engine" inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$id")"
+"$engine" exec -e ip="$ip" "$id" sh -c 'for i in $(seq 10); do
+  curl -fsS -m 1 "http://$ip:9223/json/version" >/dev/null 2>&1 && exit 0; sleep 1
+done; exit 1'
+ok 'CDP is forwarded to the guest interface on 9223'
+
 sleep 2
 test "$("$engine" inspect -f '{{.State.Running}}' "$id")" = true
 ok 'desktop container keeps running'
