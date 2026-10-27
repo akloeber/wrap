@@ -269,8 +269,12 @@ EOF
 RUN chmod 0755 /opt/wrap/bin/wrap-entrypoint
 
 # Image defaults describe the identity the workload actually runs as.
+# ~/.local/bin is where curl-installed agent CLIs (cursor-agent, claude) land;
+# appended so non-login processes (docker exec, daemons) find them without
+# letting them shadow system commands.
 ENV HOME=/home/user \
-    USER=user
+    USER=user \
+    PATH=${PATH}:/home/user/.local/bin
 
 WORKDIR /home/user/workspace
 ENTRYPOINT ["/opt/wrap/bin/wrap-entrypoint"]
