@@ -364,12 +364,14 @@ RUN for home in /root /home/user; do \
 # x11vnc + noVNC. Runs as whoever calls it (normally `user`). Xvfb is started
 # with -ac so any uid in the VM (sudo, root plumbing) can also draw on :1.
 # Each `start` re-spawns whichever piece has died, so a crashed Chrome comes
-# back on the next login shell.
+# back on the next login shell; `run` also does that every
+# WRAP_DESKTOP_SUPERVISE_SECONDS (default 30, 0 disables) and stops cleanly on
+# SIGTERM, so a failed piece never takes the container down with it.
 #
 #   wrap-desktop start [--quiet]   bring the desktop up if :1 is not live
 #   wrap-desktop status            exit 0 when :1 answers
 #   wrap-desktop stop              tear down what this uid started
-#   wrap-desktop run               start, then block (container CMD)
+#   wrap-desktop run               start, supervise, block (container CMD)
 #   wrap-desktop url               print the noVNC URL
 # ---------------------------------------------------------------------------
 RUN cat > /opt/wrap/bin/wrap-desktop <<'EOF'
@@ -382,6 +384,7 @@ set -eu
 : "${WRAP_DESKTOP_NOVNC_PORT:=6080}"
 : "${WRAP_DESKTOP_CDP_PORT:=9222}"
 : "${WRAP_DESKTOP_CHROME_PROFILE:=$HOME/.config/wrap-chrome}"
+: "${WRAP_DESKTOP_SUPERVISE_SECONDS:=30}"
 export DISPLAY
 
 dpy_num="${DISPLAY#:}"; dpy_num="${dpy_num%%.*}"
@@ -436,7 +439,7 @@ start() {
     spawn dbus dbus-daemon --session --nofork --nopidfile --address="$DBUS_SESSION_BUS_ADDRESS"
     i=0
     until bus_up; do
-      i=$((i + 1)); [ "$i" -lt 50 ] || { say "session bus did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 50 ] || { say "session bus did not come up (see $log)"; return 1; }
       sleep 0.1
     done
   fi
@@ -449,7 +452,7 @@ start() {
       +extension GLX +extension RANDR +render -noreset
     i=0
     until display_up; do
-      i=$((i + 1)); [ "$i" -lt 100 ] || { say "Xvfb did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 100 ] || { say "Xvfb did not come up (see $log)"; return 1; }
       sleep 0.1
     done
     xset -display "$DISPLAY" s off -dpms >/dev/null 2>&1 || true
@@ -472,7 +475,7 @@ start() {
     spawn chrome wrap-chrome --no-startup-window
     i=0
     until cdp_up; do
-      i=$((i + 1)); [ "$i" -lt 150 ] || { say "chrome CDP did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 150 ] || { say "chrome CDP did not come up (see $log)"; return 1; }
       sleep 0.1
     done
   fi
@@ -496,7 +499,19 @@ case "$cmd" in
   stop)   stop ;;
   status) if display_up; then say "up on $DISPLAY"; else say "down"; exit 1; fi ;;
   url)    printf 'http://127.0.0.1:%s/vnc.html\n' "$WRAP_DESKTOP_NOVNC_PORT" ;;
-  run)    start; trap stop INT TERM; while sleep 3600; do :; done ;;
+  run)
+    # Sleep in the background and `wait`: a foreground sleep defers the TERM
+    # trap until it returns, so `docker stop` would always hit its kill timeout.
+    trap 'stop; exit 0' INT TERM
+    start || say "desktop start incomplete (see $log); retrying"
+    while :; do
+      if [ "$WRAP_DESKTOP_SUPERVISE_SECONDS" -gt 0 ] 2>/dev/null; then
+        sleep "$WRAP_DESKTOP_SUPERVISE_SECONDS" & wait $! || true
+        quiet=1; start || true
+      else
+        sleep 3600 & wait $! || true
+      fi
+    done ;;
   # Whole-desktop capture (what a human would see over VNC), for agents that
   # want more than agent-browser's page screenshot.
   screenshot) out="${1:-/tmp/wrap-desktop-$(date +%s).png}"; scrot -o "$out" && printf '%s\n' "$out" ;;
