@@ -1,7 +1,3 @@
 [tools]
 # The native registry backend needs neither npm nor a Node bootstrap.
 agent-browser = { version = "latest", lazy = true }
-
-# Desktop infrastructure is installed at build time so noVNC starts offline.
-# Keep it under mise rather than maintaining a separate venv and launcher.
-"pypi:websockify" = { version = "latest" }

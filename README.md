@@ -127,7 +127,7 @@ The images declare their tools in [`resources/mise.toml`](resources/mise.toml) a
 
 Mise's `tool_update.global_auto` keeps unpinned global tools current, checking at most once every 24 hours by default. Shims update before launching a tool; interactive shells use mise's background prompt updates. Exact pins and project-selected versions are not automatically upgraded. System packages, including mise itself, are updated by pacman when the image is built.
 
-The desktop image still installs websockify and its uv/Python dependencies at build time so noVNC can start offline. Chrome and noVNC's static files also remain in the image.
+The desktop image bakes in websockify (a small venv on the system Python) so noVNC starts offline. Chrome and noVNC's static files also remain in the image.
 
 `make test-images` builds both images and tests lazy installs, automatic upgrades, exact pins, HOME overrides, and offline desktop startup. Use `make test-images CONTAINER_ENGINE=podman` for Podman.
 

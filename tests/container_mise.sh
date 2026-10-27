@@ -12,11 +12,10 @@ for command in cargo rustc go gofmt bun bunx node npm npx pnpm python python3 pi
 done
 ok 'unprivileged user has lazy tool shims and automatic updates enabled'
 
-for tool in rust go bun node pnpm; do
+for tool in rust go bun node pnpm python uv; do
   test ! -d "$MISE_DATA_DIR/installs/$tool"
 done
 if [ "$mode" = base ]; then
-  for tool in python uv; do test ! -d "$MISE_DATA_DIR/installs/$tool"; done
   MISE_NOT_FOUND_AUTO_INSTALL=0 node --version
   test -d "$MISE_DATA_DIR/installs/node"
   for tool in rust go bun pnpm python uv; do

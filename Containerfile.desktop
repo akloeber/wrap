@@ -45,15 +45,23 @@ RUN pacman -Syu --noconfirm --needed \
  && dbus-uuidgen --ensure=/etc/machine-id \
  && rm -rf /var/cache/pacman/pkg/*
 
-# mise manages the desktop CLIs too. Only websockify is installed ahead of
-# time, with its uv/Python dependencies: it is needed on every desktop start.
-# agent-browser installs on demand from the native registry backend, without
-# npm/Node or a custom launcher.
+# agent-browser installs on demand through mise's native registry backend,
+# without npm/Node or a custom launcher.
 COPY --chown=${WRAP_UID}:${WRAP_GID} resources/mise-desktop.toml /opt/mise/config/conf.d/desktop.toml
-# Download caches would otherwise ship twice: here and again in the final
-# chown -R of the user's home.
-RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise install --yes uv python pypi:websockify \
-      && rm -rf "$HOME/.cache/mise" "$HOME/.cache/uv"'
+RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise reshim'
+
+# websockify bridges noVNC to x11vnc on every desktop start, so it is baked in.
+# It is AUR-only on Arch: a venv on the system python, which costs ~1MB where
+# mise's own python + uv cost ~240MB. --no-deps skips numpy (it only speeds up
+# unmasking the small client-to-server frames) and the token-plugin libraries.
+# PATH without mise shims: pip runs `rustc --version` for its User-Agent, and
+# the lazy rustc shim would install a Rust toolchain into /root.
+RUN export PATH=/usr/sbin:/usr/bin \
+ && python -m venv /opt/websockify \
+ && /opt/websockify/bin/pip install --no-cache-dir --no-deps --quiet websockify \
+ && /opt/websockify/bin/pip uninstall --yes --quiet pip \
+ && ln -sf /opt/websockify/bin/websockify /usr/local/bin/websockify \
+ && chmod -R a+rX /opt/websockify
 
 # noVNC is static files, not a CLI; keep its versioned distribution in the image.
 ARG NOVNC_VERSION=1.6.0
