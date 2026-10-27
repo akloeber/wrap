@@ -2,7 +2,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 CONTAINER_ENGINE ?= docker
 
-.PHONY: build install test test-images fmt-check
+.PHONY: build install test test-images check-engine fmt-check
 
 build:
 	cargo build --locked --release
@@ -13,12 +13,24 @@ install: build
 test:
 	cargo test --locked
 
+# The Containerfiles write their scripts with RUN heredocs. Docker's legacy
+# builder (no buildx/BuildKit) accepts them but writes empty files, producing
+# an image whose entrypoint fails with "exec format error".
+check-engine:
+	@if [ "$$(basename "$(CONTAINER_ENGINE)")" = docker ] && ! $(CONTAINER_ENGINE) buildx version >/dev/null 2>&1; then \
+	  echo "docker has no buildx, so it would use the legacy builder, which drops RUN heredocs." >&2; \
+	  echo "Install docker-buildx, or run: make test-images CONTAINER_ENGINE=podman" >&2; \
+	  exit 1; \
+	fi
+
 # Requires egress for the first-use downloads; all containers are disposable.
-test-images:
+test-images: check-engine
 	$(CONTAINER_ENGINE) build -t localhost/wrap:test -f Containerfile .
 	$(CONTAINER_ENGINE) run --rm -v "$(CURDIR)/tests:/tests:ro" localhost/wrap:test bash /tests/container_mise.sh base
 	$(CONTAINER_ENGINE) build -t localhost/wrap:desktop-test --build-arg BASE_IMAGE=localhost/wrap:test -f Containerfile.desktop .
 	$(CONTAINER_ENGINE) run --rm -v "$(CURDIR)/tests:/tests:ro" localhost/wrap:desktop-test bash /tests/container_mise.sh desktop
 	$(CONTAINER_ENGINE) run --rm --network none -e MISE_OFFLINE=1 localhost/wrap:desktop-test sh -ec 'wrap-desktop start --quiet; curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:6080/vnc.html >/dev/null; curl -fsS http://127.0.0.1:9222/json/version >/dev/null'
+	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" bash tests/container_desktop_run.sh localhost/wrap:desktop-test
+
 fmt-check:
 	cargo fmt --check

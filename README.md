@@ -163,6 +163,8 @@ docker run -it ghcr.io/tobi/wrap:desktop                         # shell as `use
 
 Under Docker's default seccomp profile Chrome cannot create the user namespaces its sandbox needs, so the launcher detects that and starts Chrome with `--no-sandbox` (logged in `/tmp/wrap-desktop-1000/desktop.log`). Add `--security-opt seccomp=unconfined` to keep the sandbox, or set `WRAP_DESKTOP_CHROME_SANDBOX=1` (always on) or `0` (always off). As the container command, `wrap-desktop run` respawns crashed pieces every `WRAP_DESKTOP_SUPERVISE_SECONDS` (default 30, `0` disables) and stops promptly on `docker stop`.
 
+Build the images with BuildKit (`docker buildx`) or podman: Docker's legacy builder silently writes the `RUN` heredoc scripts as empty files. `make test-images` checks this.
+
 ## Network and credentials
 
 The VM starts with a default-deny network policy. Project traffic is limited to the configured allowlist, which includes GitHub by default. Custom layers and agents are applied after the published base container is loaded.
