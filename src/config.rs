@@ -1070,13 +1070,18 @@ mod tests {
         assert!(cfg.agents.iter().all(|agent| agent.host_copy.is_none()));
         // `try` ships commented out; uncomment to enable it.
         assert!(cfg.agents.iter().all(|agent| agent.name != "try"));
-        assert_eq!(
-            cfg.layers
-                .iter()
-                .map(|layer| layer.id.as_str())
-                .collect::<Vec<_>>(),
-            ["packages", "dotfiles"]
-        );
+        // The image supplies the common tools; defaults must not eagerly
+        // reinstall lazy runtimes or build a no-op customization snapshot.
+        assert!(cfg.layers.is_empty());
+        for host in ["nodejs.org", "go.dev", "dl.google.com"] {
+            assert!(
+                cfg.network
+                    .allow
+                    .iter()
+                    .any(|rule| network_rule_matches(rule, host)),
+                "lazy tool downloads must be allowed for {host}"
+            );
+        }
     }
 
     #[test]
@@ -1205,6 +1210,7 @@ mod tests {
     #[test]
     fn merges_keyed_minimal_overlay() {
         let cfg = merge_configs(&[
+            "layers:\n  - id: packages\n    script: echo setup\n  - id: dotfiles\n    script: echo old\n",
             "agents:\n  - name: omp\n    package: github:can1357/oh-my-pi@latest\n\
              layers:\n  - id: dotfiles\n    script: echo actual\n",
         ])

@@ -109,6 +109,10 @@ network:
     - .githubassets.com
     - .jdx.dev
     - .npmjs.org
+    # Lazy mise installs and updates fetch Node and Go from these hosts.
+    - .nodejs.org
+    - go.dev
+    - dl.google.com
     - .pkgbuild.com
     - files.pythonhosted.org
     - .pythonhosted.org
@@ -146,17 +150,10 @@ agents:
   #   package: github:tobi/try@latest
 
 
-layers:
-  - id: packages
-    script: |
-      sudo pacman -Sy --needed --noconfirm nano github-cli
-      mise use --global --pin --yes --jobs 4 -- uv@latest python@latest
-
-  - id: dotfiles
-    script: |
-      # example:
-      # curl github.com/your/dotfiles | bash
-
-      echo "* You are in the vm's $SHELL"
-      mise list
-      echo
+# The image already supplies nano/github-cli and lazy mise runtimes. Add
+# cached setup only for your own customizations; no extra build layers by default.
+layers: []
+# layers:
+#   - id: dotfiles
+#     script: |
+#       curl https://github.com/your/dotfiles/raw/main/install.sh | bash
