@@ -180,7 +180,12 @@ EOF
 # so it shadows the deb's /usr/bin symlink for the .desktop entry too).
 #  - container-safe flags: no /dev/shm reliance, no first-run, no default check
 #  - root gets --no-sandbox (Chrome refuses to start as uid 0 otherwise);
-#    the unprivileged `user` keeps the real sandbox.
+#    the unprivileged `user` keeps the real sandbox when the kernel allows it.
+#  - Chrome's sandbox needs unprivileged user+pid+net namespaces. Docker's
+#    default seccomp profile refuses them and Chrome then aborts at startup
+#    (zygote "Failed to move to new namespace"). WRAP_DESKTOP_CHROME_SANDBOX:
+#    auto (default) drops the sandbox only when that probe fails, 1 always
+#    keeps it, 0 always drops it. `--security-opt seccomp=unconfined` keeps it.
 RUN cat > /usr/local/bin/google-chrome-stable <<'EOF'
 #!/bin/sh
 # --password-store=basic: never trigger a keyring unlock dialog.
@@ -188,6 +193,17 @@ set -- --disable-dev-shm-usage --no-first-run --no-default-browser-check \
        --password-store=basic "$@"
 if [ "$(id -u)" = 0 ]; then
   set -- --no-sandbox "$@"
+else
+  case "${WRAP_DESKTOP_CHROME_SANDBOX:-auto}" in
+    1) ;;
+    0) set -- --no-sandbox "$@" ;;
+    *)
+      if ! unshare --user --map-root-user --pid --net --fork true 2>/dev/null; then
+        echo "wrap: user namespaces unavailable; starting Chrome with --no-sandbox" >&2
+        set -- --no-sandbox "$@"
+      fi
+      ;;
+  esac
 fi
 exec /opt/google/chrome/google-chrome "$@"
 EOF
