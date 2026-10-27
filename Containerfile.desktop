@@ -50,7 +50,10 @@ RUN pacman -Syu --noconfirm --needed \
 # agent-browser installs on demand from the native registry backend, without
 # npm/Node or a custom launcher.
 COPY --chown=${WRAP_UID}:${WRAP_GID} resources/mise-desktop.toml /opt/mise/config/conf.d/desktop.toml
-RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise install --yes uv python pypi:websockify'
+# Download caches would otherwise ship twice: here and again in the final
+# chown -R of the user's home.
+RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise install --yes uv python pypi:websockify \
+      && rm -rf "$HOME/.cache/mise" "$HOME/.cache/uv"'
 
 # noVNC is static files, not a CLI; keep its versioned distribution in the image.
 ARG NOVNC_VERSION=1.6.0
@@ -555,7 +558,9 @@ RUN cat > /etc/wrap/desktop.md <<'EOF'
 EOF
 
 # Anything a root build step may have left in the user's home belongs to user.
-RUN chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}"
+# Only touch mis-owned paths: chown -R rewrites every file into a new layer.
+RUN find "${WRAP_USER_HOME}" \( ! -uid "${WRAP_UID}" -o ! -gid "${WRAP_GID}" \) \
+      -exec chown -h "${WRAP_UID}:${WRAP_GID}" {} +
 
 ENV HOME=/home/user USER=user
 EXPOSE 5900 6080 9222
