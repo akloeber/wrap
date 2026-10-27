@@ -1,0 +1,75 @@
+#!/bin/bash
+# Run inside a fresh, disposable base/desktop image. First-use tests need egress.
+set -euo pipefail
+mode="${1:?expected base or desktop}"
+case "$mode" in base|desktop) ;; *) exit 2 ;; esac
+
+ok() { printf 'ok - %s\n' "$*"; }
+test "$(id -u)" = "$WRAP_UID"
+test "$(mise settings tool_update.global_auto)" = true
+for command in cargo rustc go gofmt bun bunx node npm npx pnpm python python3 pip uv uvx; do
+  test -x "$MISE_DATA_DIR/shims/$command"
+done
+ok 'unprivileged user has lazy tool shims and automatic updates enabled'
+
+for tool in rust go bun node pnpm; do
+  test ! -d "$MISE_DATA_DIR/installs/$tool"
+done
+if [ "$mode" = base ]; then
+  for tool in python uv; do test ! -d "$MISE_DATA_DIR/installs/$tool"; done
+  MISE_NOT_FOUND_AUTO_INSTALL=0 node --version
+  test -d "$MISE_DATA_DIR/installs/node"
+  for tool in rust go bun pnpm python uv; do
+    test ! -d "$MISE_DATA_DIR/installs/$tool"
+  done
+  ok 'first node invocation installs only node, even with not-found auto-install disabled'
+
+  alternate_home="$(mktemp -d)"
+  HOME="$alternate_home" MISE_OFFLINE=1 node --version
+  sudo -n -i env MISE_OFFLINE=1 node --version
+  ok 'installed tools work offline with a different HOME and under sudo'
+else
+  test ! -d "$MISE_DATA_DIR/installs/agent-browser"
+  test -x "$MISE_DATA_DIR/shims/agent-browser"
+  agent-browser --version
+  test ! -d "$MISE_DATA_DIR/installs/node"
+  MISE_OFFLINE=1 websockify --help >/dev/null
+  ok 'native agent-browser installs without node; websockify is ready offline'
+
+  MISE_OFFLINE=1 wrap-desktop start --quiet
+  MISE_OFFLINE=1 agent-browser open about:blank
+  ok 'native agent-browser attaches to the preconfigured shared Chrome desktop'
+fi
+
+# A local asdf fixture proves automatic upgrades without depending on two
+# upstream releases or waiting for mise's 24h check interval. It inherits the
+# real image's global_auto setting; no per-tool auto_update option is set.
+plugin="$MISE_DATA_DIR/plugins/wrap-container-test/bin"
+mkdir -p "$plugin" "$MISE_CONFIG_DIR/conf.d"
+cat > "$plugin/list-all" <<'EOF'
+#!/bin/sh
+printf '1.0.0 2.0.0\n'
+EOF
+cat > "$plugin/download" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$plugin/install" <<'EOF'
+#!/bin/sh
+set -eu
+mkdir -p "$ASDF_INSTALL_PATH/bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$ASDF_INSTALL_VERSION" > "$ASDF_INSTALL_PATH/bin/wrap-container-test"
+chmod +x "$ASDF_INSTALL_PATH/bin/wrap-container-test"
+EOF
+chmod +x "$plugin/"*
+fixture_config="$MISE_CONFIG_DIR/conf.d/wrap-container-test.toml"
+printf '[tools]\nwrap-container-test = { version = "1.0.0", lazy = true, lazy_bins = ["wrap-container-test"] }\n' > "$fixture_config"
+mise reshim
+test ! -d "$MISE_DATA_DIR/installs/wrap-container-test"
+test "$(MISE_NOT_FOUND_AUTO_INSTALL=0 wrap-container-test)" = 1.0.0
+test "$(wrap-container-test)" = 1.0.0
+ok 'lazy first use installs an exact pin and automatic updates preserve it'
+
+printf '[tools]\nwrap-container-test = { version = "latest", lazy = true, lazy_bins = ["wrap-container-test"] }\n' > "$fixture_config"
+test "$(wrap-container-test)" = 2.0.0
+ok 'global_auto updates a previously installed tool before launching it'

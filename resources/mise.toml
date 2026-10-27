@@ -1,0 +1,14 @@
+# Global image defaults: install runtimes only when one of their commands runs.
+# mise handles update checks (24h by default), failures, and pruning. Exact
+# versions selected by a project or `mise use --pin` remain pinned.
+[settings]
+tool_update.global_auto = true
+
+[tools]
+rust = { version = "latest", lazy = true }
+go = { version = "latest", lazy = true }
+bun = { version = "latest", lazy = true }
+node = { version = "latest", lazy = true }
+pnpm = { version = "latest", lazy = true }
+python = { version = "latest", lazy = true }
+uv = { version = "latest", lazy = true }

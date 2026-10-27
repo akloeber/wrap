@@ -35,7 +35,7 @@ ENV MISE_DATA_DIR=/opt/mise/data \
 # Build-time identity only; the runtime identity is set at the end of the file.
 ENV HOME=/root \
     USER=root \
-    PATH=/usr/local/bin:/opt/mise/data/shims:/opt/wrap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/usr/local/bin:/opt/mise/data/shims:/opt/wrap/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     STARSHIP_CONFIG=/etc/wrap/starship.toml
 
 # Unprivileged identity. uid/gid 1000 matches the common single-user host uid,
@@ -48,8 +48,8 @@ ENV WRAP_UID=1000 \
 # Arch's own geo mirror: it is what wrap's default network allowlist permits
 # (.pkgbuild.com), so `sudo pacman -S` keeps working inside the VM.
 RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist \
- && pacman-key --init || true \
- && pacman-key --populate archlinux || true \
+ && pacman-key --init \
+ && pacman-key --populate archlinux \
  && pacman -Sy --noconfirm archlinux-keyring \
  && pacman -Syu --noconfirm \
       base-devel \
@@ -70,7 +70,6 @@ RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /e
       ninja \
       openssh \
       python \
-      python-pip \
       ripgrep \
       ruby \
       sudo \
@@ -80,22 +79,17 @@ RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /e
       which \
       zsh \
       starship \
- && install -d /opt/mise /opt/wrap/bin /etc/wrap \
- && /usr/bin/mise self-update --yes || true \
- && /usr/bin/mise use --global --pin --yes --jobs 4 -- \
-      rust@latest \
-      go@latest \
-      bun@latest \
-      node@latest \
-      pnpm@latest \
-      python@latest \
-      uv@latest \
+ && install -d /opt/mise/config/conf.d /opt/wrap/bin /etc/wrap \
  && if ! grep -qx '/bin/zsh' /etc/shells; then echo /bin/zsh >> /etc/shells; fi \
  && if ! grep -qx '/usr/bin/zsh' /etc/shells; then echo /usr/bin/zsh >> /etc/shells; fi \
  && (chsh -s /bin/zsh root || true) \
- && rm -rf /var/cache/pacman/pkg/* /root/.cache /root/.local/state/mise \
- && chmod -R a+rX /opt/mise /opt/wrap \
- && find /opt/mise/data/shims -type f -exec chmod a+rx {} + 2>/dev/null || true
+ && rm -rf /var/cache/pacman/pkg/*
+
+# Declare tools without downloading them. reshim creates mise's bootstrap
+# commands; first use installs just the requested tool, later uses auto-update.
+# mise itself is an Arch package, updated with pacman rather than self-update.
+COPY resources/mise.toml /opt/mise/config/config.toml
+RUN mise reshim
 
 # ---------------------------------------------------------------------------
 # Unprivileged `user` (uid/gid 1000) with passwordless sudo.
@@ -159,7 +153,6 @@ autoload -Uz compinit && compinit -u 2>/dev/null || true
 alias ls='eza --group-directories-first'
 alias ll='eza -l --git --group-directories-first'
 alias la='eza -la --git --group-directories-first'
-alias cat='cat'
 alias g=git
 EOF
 

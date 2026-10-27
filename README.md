@@ -121,13 +121,23 @@ Everything runs as the unprivileged `user` account inside the VM (`HOME=/home/us
 
 If you opt in with `host-copy`, imported host agent configuration lands under `/home/user`.
 
+## Image toolchain
+
+The images declare their tools in [`resources/mise.toml`](resources/mise.toml) and [`resources/mise-desktop.toml`](resources/mise-desktop.toml). Language runtimes and `agent-browser` are **lazy**: mise creates their commands at image build time, but downloads a tool only when you first run it. That first run needs network access; the default allowlist includes the download hosts. Installs persist in the project VM.
+
+Mise's `tool_update.global_auto` keeps unpinned global tools current, checking at most once every 24 hours by default. Shims update before launching a tool; interactive shells use mise's background prompt updates. Exact pins and project-selected versions are not automatically upgraded. System packages, including mise itself, are updated by pacman when the image is built.
+
+The desktop image still installs websockify and its uv/Python dependencies at build time so noVNC can start offline. Chrome and noVNC's static files also remain in the image.
+
+`make test-images` builds both images and tests lazy installs, automatic upgrades, exact pins, HOME overrides, and offline desktop startup. Use `make test-images CONTAINER_ENGINE=podman` for Podman.
+
 ## Desktop image
 
 `ghcr.io/tobi/wrap:desktop` (`Containerfile.desktop`) layers a headless desktop on the base image:
 
 - X display `:1` (Xvfb, 1280x800) running a minimal XFCE — navy backdrop, one bottom dock with Chrome, Thunar and Terminal — autostarted from login shells; `wrap-desktop start|stop|status|url`.
 - One persistent Google Chrome on that desktop (no window until agent-browser or the dock opens one) with CDP on `127.0.0.1:9222`. The setup speedrun is baked in system-wide: managed policies (`/etc/opt/chrome/policies/managed`) and `initial_preferences` disable sign-in, sync, default-browser, privacy-sandbox, promo, password/autofill and keyring prompts, so neither agents nor humans ever see first-run UI.
-- `agent-browser` preinstalled and preconfigured (`~/.agent-browser/config.json`, `cdp: 9222`) to attach to that Chrome: `agent-browser open https://example.com` acts in the same browser you see over VNC, so you can watch, log in, or take over and hand back. A project `./agent-browser.json` still overrides (drop `cdp` for an isolated headed Chrome).
+- `agent-browser` installed on demand through mise's native backend (no npm/Node bootstrap) and preconfigured (`~/.agent-browser/config.json`, `cdp: 9222`) to attach to that Chrome: `agent-browser open https://example.com` acts in the same browser you see over VNC, so you can watch, log in, or take over and hand back. A project `./agent-browser.json` still overrides (drop `cdp` for an isolated headed Chrome).
 - View it over noVNC at `http://127.0.0.1:6080/vnc.html` (or VNC on 5900, no password) by publishing the ports in `~/.config/wrap/config.yml`; the host side is loopback-only.
 
 Use it from wrap:

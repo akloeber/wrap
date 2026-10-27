@@ -35,7 +35,7 @@ ENV DISPLAY=:1 \
 # ---------------------------------------------------------------------------
 RUN pacman -Syu --noconfirm --needed \
       xorg-server-xvfb xorg-xauth xorg-xdpyinfo xorg-xset xorg-xrandr xdotool \
-      x11vnc scrot python \
+      x11vnc scrot \
       dbus xfce4-session xfwm4 xfdesktop xfce4-panel xfce4-settings xfconf \
       xfce4-terminal thunar xfce4-appfinder garcon adwaita-icon-theme \
       ttf-dejavu ttf-liberation noto-fonts noto-fonts-emoji \
@@ -45,8 +45,14 @@ RUN pacman -Syu --noconfirm --needed \
  && dbus-uuidgen --ensure=/etc/machine-id \
  && rm -rf /var/cache/pacman/pkg/*
 
-# noVNC + websockify are AUR-only on Arch: vendor them. noVNC is static files;
-# websockify goes into its own venv (system python, PEP 668-safe).
+# mise manages the desktop CLIs too. Only websockify is installed ahead of
+# time, with its uv/Python dependencies: it is needed on every desktop start.
+# agent-browser installs on demand from the native registry backend, without
+# npm/Node or a custom launcher.
+COPY --chown=${WRAP_UID}:${WRAP_GID} resources/mise-desktop.toml /opt/mise/config/conf.d/desktop.toml
+RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise install --yes uv python pypi:websockify'
+
+# noVNC is static files, not a CLI; keep its versioned distribution in the image.
 ARG NOVNC_VERSION=1.6.0
 RUN curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
       | bsdtar -x -C /tmp \
@@ -54,10 +60,7 @@ RUN curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSIO
  && mv "/tmp/noVNC-${NOVNC_VERSION}" /usr/share/novnc \
  && rm -rf /usr/share/novnc/tests /usr/share/novnc/docs /usr/share/novnc/snap \
  && ln -sf vnc.html /usr/share/novnc/index.html \
- && /usr/bin/python -m venv /opt/websockify \
- && /opt/websockify/bin/pip install --no-cache-dir --quiet websockify \
- && ln -sf /opt/websockify/bin/websockify /usr/local/bin/websockify \
- && chmod -R a+rX /usr/share/novnc /opt/websockify
+ && chmod -R a+rX /usr/share/novnc
 
 # ---------------------------------------------------------------------------
 # Google Chrome stable, straight from Google's .deb (the AUR package does the
@@ -215,17 +218,6 @@ Terminal=false
 Categories=Network;WebBrowser;
 StartupWMClass=Google-chrome
 EOF
-
-# ---------------------------------------------------------------------------
-# agent-browser, pinned into the shared /opt/mise toolchain like the other
-# tools (node comes from the base image). Installed *as user*: /opt/mise is
-# user-owned, root only reads it. A login shell gives sudo the MISE_* env.
-# The native CLI is fetched by its postinstall at build time, so first use in
-# the VM needs no network.
-# ---------------------------------------------------------------------------
-RUN sudo -u "${WRAP_USER_NAME}" -H env WRAP_DESKTOP_AUTOSTART=0 sh -lc \
-      'mise use --global --pin --yes -- npm:agent-browser@latest \
-       && mise exec npm:agent-browser -- agent-browser --version'
 
 # agent-browser defaults: user-level config (~/.agent-browser/config.json) so
 # a project-level ./agent-browser.json can still layer on top. Seeded into
