@@ -5,7 +5,10 @@
 tool_update.global_auto = true
 
 [tools]
-rust = { version = "latest", lazy = true }
+# No lazy rustc: pip (and other tools) probe `rustc --version` with a short
+# timeout, which would start a toolchain install and abandon it half-done on
+# every call. cargo installs the toolchain; rustc appears with it.
+rust = { version = "latest", lazy = true, lazy_bins = ["cargo", "rustup"] }
 go = { version = "latest", lazy = true }
 bun = { version = "latest", lazy = true }
 node = { version = "latest", lazy = true }

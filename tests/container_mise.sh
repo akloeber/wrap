@@ -7,9 +7,10 @@ case "$mode" in base|desktop) ;; *) exit 2 ;; esac
 ok() { printf 'ok - %s\n' "$*"; }
 test "$(id -u)" = "$WRAP_UID"
 test "$(mise settings tool_update.global_auto)" = true
-for command in cargo rustc go gofmt bun bunx node npm npx pnpm python python3 pip uv uvx; do
+for command in cargo rustup go gofmt bun bunx node npm npx pnpm python python3 pip uv uvx; do
   test -x "$MISE_DATA_DIR/shims/$command"
 done
+! command -v rustc >/dev/null
 ok 'unprivileged user has lazy tool shims and automatic updates enabled'
 
 for tool in rust go bun node pnpm python uv; do
