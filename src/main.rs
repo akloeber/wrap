@@ -576,7 +576,9 @@ fn mise_install_package(package: &str) -> Result<String> {
 /// Build layers run as the same unprivileged `user` the session will run as,
 /// with passwordless sudo for system packages. mise is pointed at the shared
 /// /opt tree (user-owned in the image) so tools installed here are what the
-/// session sees, and `user` can keep installing into it at runtime.
+/// session sees, and `user` can keep installing into it at runtime. New
+/// directories stay group-writable so the image's toolchain group retains
+/// access after the session uid is realigned to the workspace owner.
 ///
 /// The guarded chown is a transition aid for base images that still ship
 /// /opt/mise root-owned; it is a no-op on current images.
@@ -594,6 +596,7 @@ fn build_script(body: &str) -> String {
          export PATH=\"/usr/local/bin:{MISE_DATA_DIR}/shims:/opt/wrap/bin:\
          /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\n\
          [ -O {MISE_DATA_DIR} ] || sudo -n chown -R \"$(id -u):$(id -g)\" /opt/mise\n\
+         umask 0002\n\
          {auth}\
          {body}\n"
     )
@@ -2258,6 +2261,9 @@ mod tests {
         assert!(!stages[1].script.contains("starship@latest"));
         assert!(stages[2].script.contains("echo custom"));
         for stage in &stages {
+            // All image/agent/custom layers must preserve group write for
+            // tool directories created before the session uid changes.
+            assert!(stage.script.contains("\numask 0002\n"));
             assert!(
                 std::process::Command::new("/bin/bash")
                     .args(["-n", "-c", &stage.script])
