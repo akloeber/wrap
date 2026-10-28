@@ -9,8 +9,9 @@
 #
 # VNC :5900 and noVNC :6080 listen on all guest interfaces so the VM/container
 # port publish (which targets the guest NIC, not its loopback) can reach them;
-# the host side of that publish is loopback-only. CDP :9222 stays on
-# 127.0.0.1 — only agent-browser inside the guest needs it.
+# the host side of that publish is loopback-only. Chrome only binds CDP to
+# 127.0.0.1:9222 (it ignores --remote-debugging-address with a window), so a
+# socat forwarder serves it on all guest interfaces at :9223.
 ARG BASE_IMAGE=ghcr.io/tobi/wrap:latest
 FROM ${BASE_IMAGE}
 
@@ -25,6 +26,7 @@ ENV DISPLAY=:1 \
     WRAP_DESKTOP_VNC_PORT=5900 \
     WRAP_DESKTOP_NOVNC_PORT=6080 \
     WRAP_DESKTOP_CDP_PORT=9222 \
+    WRAP_DESKTOP_CDP_PUBLIC_PORT=9223 \
     XDG_SESSION_TYPE=x11 \
     NO_AT_BRIDGE=1
 
@@ -35,7 +37,7 @@ ENV DISPLAY=:1 \
 # ---------------------------------------------------------------------------
 RUN pacman -Syu --noconfirm --needed \
       xorg-server-xvfb xorg-xauth xorg-xdpyinfo xorg-xset xorg-xrandr xdotool \
-      x11vnc scrot python \
+      x11vnc scrot socat \
       dbus xfce4-session xfwm4 xfdesktop xfce4-panel xfce4-settings xfconf \
       xfce4-terminal thunar xfce4-appfinder garcon adwaita-icon-theme \
       ttf-dejavu ttf-liberation noto-fonts noto-fonts-emoji \
@@ -45,8 +47,22 @@ RUN pacman -Syu --noconfirm --needed \
  && dbus-uuidgen --ensure=/etc/machine-id \
  && rm -rf /var/cache/pacman/pkg/*
 
-# noVNC + websockify are AUR-only on Arch: vendor them. noVNC is static files;
-# websockify goes into its own venv (system python, PEP 668-safe).
+# agent-browser installs on demand through mise's native registry backend,
+# without npm/Node or a custom launcher.
+COPY --chown=${WRAP_UID}:${WRAP_GID} resources/mise-desktop.toml /opt/mise/config/conf.d/desktop.toml
+RUN sudo -u "${WRAP_USER_NAME}" -H sh -lc 'mise reshim'
+
+# websockify bridges noVNC to x11vnc on every desktop start, so it is baked in.
+# It is AUR-only on Arch: a venv on the system python, which costs ~1MB where
+# mise's own python + uv cost ~240MB. --no-deps skips numpy (it only speeds up
+# unmasking the small client-to-server frames) and the token-plugin libraries.
+RUN /usr/bin/python -m venv /opt/websockify \
+ && /opt/websockify/bin/pip install --no-cache-dir --no-deps --quiet websockify \
+ && /opt/websockify/bin/pip uninstall --yes --quiet pip \
+ && ln -sf /opt/websockify/bin/websockify /usr/local/bin/websockify \
+ && chmod -R a+rX /opt/websockify
+
+# noVNC is static files, not a CLI; keep its versioned distribution in the image.
 ARG NOVNC_VERSION=1.6.0
 RUN curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
       | bsdtar -x -C /tmp \
@@ -54,10 +70,7 @@ RUN curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSIO
  && mv "/tmp/noVNC-${NOVNC_VERSION}" /usr/share/novnc \
  && rm -rf /usr/share/novnc/tests /usr/share/novnc/docs /usr/share/novnc/snap \
  && ln -sf vnc.html /usr/share/novnc/index.html \
- && /usr/bin/python -m venv /opt/websockify \
- && /opt/websockify/bin/pip install --no-cache-dir --quiet websockify \
- && ln -sf /opt/websockify/bin/websockify /usr/local/bin/websockify \
- && chmod -R a+rX /usr/share/novnc /opt/websockify
+ && chmod -R a+rX /usr/share/novnc
 
 # ---------------------------------------------------------------------------
 # Google Chrome stable, straight from Google's .deb (the AUR package does the
@@ -176,10 +189,23 @@ EOF
 # Launcher that every consumer goes through (PATH puts /usr/local/bin first,
 # so it shadows the deb's /usr/bin symlink for the .desktop entry too).
 #  - container-safe flags: no /dev/shm reliance, no first-run, no default check
-#  - root gets --no-sandbox (Chrome refuses to start as uid 0 otherwise);
-#    the unprivileged `user` keeps the real sandbox.
+#  - root gets --no-sandbox (Chrome refuses to start as uid 0 otherwise).
+#  - user flags, one per line, from ~/.config/chrome-flags.conf (Arch's
+#    google-chrome convention), else /etc/wrap/chrome-flags.conf. They apply to
+#    every launch: the shared desktop Chrome, the dock, and any Chrome that
+#    agent-browser starts itself.
 RUN cat > /usr/local/bin/google-chrome-stable <<'EOF'
 #!/bin/sh
+n=$#
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/chrome-flags.conf"
+[ -r "$conf" ] || conf=/etc/wrap/chrome-flags.conf
+if [ -r "$conf" ]; then
+  while read -r flag || [ -n "$flag" ]; do
+    case "$flag" in ''|'#'*) ;; *) set -- "$@" "$flag" ;; esac
+  done < "$conf"
+fi
+# Rotate the caller's arguments (URLs) back behind the configured flags.
+while [ "$n" -gt 0 ]; do a=$1; shift; set -- "$@" "$a"; n=$((n - 1)); done
 # --password-store=basic: never trigger a keyring unlock dialog.
 set -- --disable-dev-shm-usage --no-first-run --no-default-browser-check \
        --password-store=basic "$@"
@@ -187,6 +213,20 @@ if [ "$(id -u)" = 0 ]; then
   set -- --no-sandbox "$@"
 fi
 exec /opt/google/chrome/google-chrome "$@"
+EOF
+# Chrome's sandbox needs unprivileged user+pid+net namespaces, which Docker's
+# default seccomp profile refuses (Chrome then aborts: zygote "Failed to move to
+# new namespace"), so the default drops it. Remove --no-sandbox under a runtime
+# that allows them (microVMs, `--security-opt seccomp=unconfined`).
+# Chrome honors only the last --enable-features: keep both WebMCP features in
+# any replacement line, or agent-browser's `webmcp` commands find no tools.
+RUN cat > /etc/wrap/chrome-flags.conf <<'EOF'
+# Extra Google Chrome flags, one per line. Copy to ~/.config/chrome-flags.conf
+# to change them; restart Chrome with `wrap-desktop stop && wrap-desktop start`.
+--no-sandbox
+# WebMCP: pages register tools on document.modelContext; agent-browser lists
+# and calls them with `agent-browser webmcp list|invoke`.
+--enable-features=WebMCPTesting,DevToolsWebMCPSupport
 EOF
 RUN chmod 0755 /usr/local/bin/google-chrome-stable \
  && ln -sf google-chrome-stable /usr/local/bin/google-chrome \
@@ -215,17 +255,6 @@ Terminal=false
 Categories=Network;WebBrowser;
 StartupWMClass=Google-chrome
 EOF
-
-# ---------------------------------------------------------------------------
-# agent-browser, pinned into the shared /opt/mise toolchain like the other
-# tools (node comes from the base image). Installed *as user*: /opt/mise is
-# user-owned, root only reads it. A login shell gives sudo the MISE_* env.
-# The native CLI is fetched by its postinstall at build time, so first use in
-# the VM needs no network.
-# ---------------------------------------------------------------------------
-RUN sudo -u "${WRAP_USER_NAME}" -H env WRAP_DESKTOP_AUTOSTART=0 sh -lc \
-      'mise use --global --pin --yes -- npm:agent-browser@latest \
-       && mise exec npm:agent-browser -- agent-browser --version'
 
 # agent-browser defaults: user-level config (~/.agent-browser/config.json) so
 # a project-level ./agent-browser.json can still layer on top. Seeded into
@@ -356,12 +385,14 @@ RUN for home in /root /home/user; do \
 # x11vnc + noVNC. Runs as whoever calls it (normally `user`). Xvfb is started
 # with -ac so any uid in the VM (sudo, root plumbing) can also draw on :1.
 # Each `start` re-spawns whichever piece has died, so a crashed Chrome comes
-# back on the next login shell.
+# back on the next login shell; `run` also does that every
+# WRAP_DESKTOP_SUPERVISE_SECONDS (default 30, 0 disables) and stops cleanly on
+# SIGTERM, so a failed piece never takes the container down with it.
 #
 #   wrap-desktop start [--quiet]   bring the desktop up if :1 is not live
 #   wrap-desktop status            exit 0 when :1 answers
 #   wrap-desktop stop              tear down what this uid started
-#   wrap-desktop run               start, then block (container CMD)
+#   wrap-desktop run               start, supervise, block (container CMD)
 #   wrap-desktop url               print the noVNC URL
 # ---------------------------------------------------------------------------
 RUN cat > /opt/wrap/bin/wrap-desktop <<'EOF'
@@ -373,7 +404,9 @@ set -eu
 : "${WRAP_DESKTOP_VNC_PORT:=5900}"
 : "${WRAP_DESKTOP_NOVNC_PORT:=6080}"
 : "${WRAP_DESKTOP_CDP_PORT:=9222}"
+: "${WRAP_DESKTOP_CDP_PUBLIC_PORT=9223}"
 : "${WRAP_DESKTOP_CHROME_PROFILE:=$HOME/.config/wrap-chrome}"
+: "${WRAP_DESKTOP_SUPERVISE_SECONDS:=30}"
 export DISPLAY
 
 dpy_num="${DISPLAY#:}"; dpy_num="${dpy_num%%.*}"
@@ -428,7 +461,7 @@ start() {
     spawn dbus dbus-daemon --session --nofork --nopidfile --address="$DBUS_SESSION_BUS_ADDRESS"
     i=0
     until bus_up; do
-      i=$((i + 1)); [ "$i" -lt 50 ] || { say "session bus did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 50 ] || { say "session bus did not come up (see $log)"; return 1; }
       sleep 0.1
     done
   fi
@@ -441,7 +474,7 @@ start() {
       +extension GLX +extension RANDR +render -noreset
     i=0
     until display_up; do
-      i=$((i + 1)); [ "$i" -lt 100 ] || { say "Xvfb did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 100 ] || { say "Xvfb did not come up (see $log)"; return 1; }
       sleep 0.1
     done
     xset -display "$DISPLAY" s off -dpms >/dev/null 2>&1 || true
@@ -464,12 +497,17 @@ start() {
     spawn chrome wrap-chrome --no-startup-window
     i=0
     until cdp_up; do
-      i=$((i + 1)); [ "$i" -lt 150 ] || { say "chrome CDP did not come up (see $log)"; exit 1; }
+      i=$((i + 1)); [ "$i" -lt 150 ] || { say "chrome CDP did not come up (see $log)"; return 1; }
       sleep 0.1
     done
   fi
+  # CDP for DevTools/automation outside the guest. Empty or 0 disables it.
+  if [ -n "$WRAP_DESKTOP_CDP_PUBLIC_PORT" ] && [ "$WRAP_DESKTOP_CDP_PUBLIC_PORT" != 0 ]; then
+    spawn cdp-public socat "TCP-LISTEN:$WRAP_DESKTOP_CDP_PUBLIC_PORT,bind=0.0.0.0,reuseaddr,fork" \
+      "TCP:127.0.0.1:$WRAP_DESKTOP_CDP_PORT"
+  fi
   say "vnc  :$WRAP_DESKTOP_VNC_PORT   novnc http://127.0.0.1:$WRAP_DESKTOP_NOVNC_PORT/vnc.html (via port publish)"
-  say "cdp  http://127.0.0.1:$WRAP_DESKTOP_CDP_PORT  (agent-browser attaches here)"
+  say "cdp  http://127.0.0.1:$WRAP_DESKTOP_CDP_PORT  (agent-browser attaches here; :$WRAP_DESKTOP_CDP_PUBLIC_PORT on guest interfaces)"
 }
 
 stop() {
@@ -488,7 +526,19 @@ case "$cmd" in
   stop)   stop ;;
   status) if display_up; then say "up on $DISPLAY"; else say "down"; exit 1; fi ;;
   url)    printf 'http://127.0.0.1:%s/vnc.html\n' "$WRAP_DESKTOP_NOVNC_PORT" ;;
-  run)    start; trap stop INT TERM; while sleep 3600; do :; done ;;
+  run)
+    # Sleep in the background and `wait`: a foreground sleep defers the TERM
+    # trap until it returns, so `docker stop` would always hit its kill timeout.
+    trap 'stop; exit 0' INT TERM
+    start || say "desktop start incomplete (see $log); retrying"
+    while :; do
+      if [ "$WRAP_DESKTOP_SUPERVISE_SECONDS" -gt 0 ] 2>/dev/null; then
+        sleep "$WRAP_DESKTOP_SUPERVISE_SECONDS" & wait $! || true
+        quiet=1; start || true
+      else
+        sleep 3600 & wait $! || true
+      fi
+    done ;;
   # Whole-desktop capture (what a human would see over VNC), for agents that
   # want more than agent-browser's page screenshot.
   screenshot) out="${1:-/tmp/wrap-desktop-$(date +%s).png}"; scrot -o "$out" && printf '%s\n' "$out" ;;
@@ -519,7 +569,9 @@ RUN cat > /etc/wrap/desktop.md <<'EOF'
   Chrome's NSS store at start, so intercepted hosts load without cert errors.
 - One persistent Google Chrome on that desktop (no window until something opens
   one; the dock's Chrome icon opens a window in the same instance), CDP on
-  127.0.0.1:9222, profile in ~/.config/wrap-chrome. First-run, sign-in, sync, default-browser,
+  127.0.0.1:9222 (and :9223 on guest interfaces for publishing), profile in
+  ~/.config/wrap-chrome. Launch flags (default --no-sandbox and WebMCP) come
+  from ~/.config/chrome-flags.conf, else /etc/wrap/chrome-flags.conf. First-run, sign-in, sync, default-browser,
   privacy-sandbox, keyring and promo prompts are disabled via managed policies in
   /etc/opt/chrome/policies/managed and /opt/google/chrome/initial_preferences.
 - agent-browser is preconfigured (~/.agent-browser/config.json, `cdp: 9222`) to
@@ -527,13 +579,16 @@ RUN cat > /etc/wrap/desktop.md <<'EOF'
   same browser a human sees over VNC and can take over (log in, solve a captcha,
   hand back). A project-level ./agent-browser.json still overrides, e.g. drop
   `cdp` to get an isolated headed Chrome instead. `agent-browser doctor` verifies.
+  Pages' WebMCP tools: `agent-browser webmcp list` / `webmcp invoke <tool>`.
 - View: VNC :5900 (no password) or noVNC http://<host>:6080/vnc.html through the
   VM's published ports (wrap: `network.ports: [6080]`; the host side is loopback).
 EOF
 
 # Anything a root build step may have left in the user's home belongs to user.
-RUN chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}"
+# Only touch mis-owned paths: chown -R rewrites every file into a new layer.
+RUN find "${WRAP_USER_HOME}" \( ! -uid "${WRAP_UID}" -o ! -gid "${WRAP_GID}" \) \
+      -exec chown -h "${WRAP_UID}:${WRAP_GID}" {} +
 
 ENV HOME=/home/user USER=user
-EXPOSE 5900 6080 9222
+EXPOSE 5900 6080 9223
 CMD ["/opt/wrap/bin/wrap-desktop", "run"]

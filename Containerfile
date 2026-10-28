@@ -35,7 +35,7 @@ ENV MISE_DATA_DIR=/opt/mise/data \
 # Build-time identity only; the runtime identity is set at the end of the file.
 ENV HOME=/root \
     USER=root \
-    PATH=/usr/local/bin:/opt/mise/data/shims:/opt/wrap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/usr/local/bin:/opt/mise/data/shims:/opt/wrap/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     STARSHIP_CONFIG=/etc/wrap/starship.toml
 
 # Unprivileged identity. uid/gid 1000 matches the common single-user host uid,
@@ -48,8 +48,8 @@ ENV WRAP_UID=1000 \
 # Arch's own geo mirror: it is what wrap's default network allowlist permits
 # (.pkgbuild.com), so `sudo pacman -S` keeps working inside the VM.
 RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist \
- && pacman-key --init || true \
- && pacman-key --populate archlinux || true \
+ && pacman-key --init \
+ && pacman-key --populate archlinux \
  && pacman -Sy --noconfirm archlinux-keyring \
  && pacman -Syu --noconfirm \
       base-devel \
@@ -61,14 +61,15 @@ RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /e
       fd \
       gdb \
       git \
+      github-cli \
       gnupg \
       jq \
       libyaml \
       mise \
+      nano \
       ninja \
       openssh \
       python \
-      python-pip \
       ripgrep \
       ruby \
       sudo \
@@ -78,26 +79,22 @@ RUN printf '%s\n' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /e
       which \
       zsh \
       starship \
- && install -d /opt/mise /opt/wrap/bin /workspace /etc/wrap \
- && /usr/bin/mise self-update --yes || true \
- && /usr/bin/mise use --global --pin --yes --jobs 4 -- \
-      rust@latest \
-      go@latest \
-      bun@latest \
-      node@latest \
-      pnpm@latest \
-      python@latest \
+ && install -d /opt/mise/config/conf.d /opt/wrap/bin /etc/wrap \
  && if ! grep -qx '/bin/zsh' /etc/shells; then echo /bin/zsh >> /etc/shells; fi \
  && if ! grep -qx '/usr/bin/zsh' /etc/shells; then echo /usr/bin/zsh >> /etc/shells; fi \
  && (chsh -s /bin/zsh root || true) \
- && rm -rf /var/cache/pacman/pkg/* /root/.cache /root/.local/state/mise \
- && chmod -R a+rX /opt/mise /opt/wrap \
- && find /opt/mise/data/shims -type f -exec chmod a+rx {} + 2>/dev/null || true
+ && rm -rf /var/cache/pacman/pkg/*
+
+# Declare tools without downloading them. reshim creates mise's bootstrap
+# commands; first use installs just the requested tool, later uses auto-update.
+# mise itself is an Arch package, updated with pacman rather than self-update.
+COPY resources/mise.toml /opt/mise/config/config.toml
+RUN mise reshim
 
 # ---------------------------------------------------------------------------
 # Unprivileged `user` (uid/gid 1000) with passwordless sudo.
-# /workspace is owned by that uid so the default bind-mount target is writable
-# in user mode without any host-side chown.
+# The project bind-mounts at ${WRAP_USER_HOME}/workspace, owned by that uid
+# so it is writable in user mode without any host-side chown.
 # /opt/mise is owned by that uid too: the toolchain lives at a HOME-independent
 # path, but `user` must be able to `mise use`/`mise install` into it without
 # sudo. root still reads it fine (a+rX).
@@ -111,7 +108,8 @@ RUN groupadd -g "${WRAP_GID}" "${WRAP_USER_NAME}" 2>/dev/null || true \
  && printf '%%wheel ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/11-wrap-wheel \
  && chmod 0440 /etc/sudoers.d/10-wrap-user /etc/sudoers.d/11-wrap-wheel \
  && visudo -c \
- && chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}" /workspace /opt/mise \
+ && install -d -o "${WRAP_UID}" -g "${WRAP_GID}" "${WRAP_USER_HOME}/workspace" \
+ && chown -R "${WRAP_UID}:${WRAP_GID}" "${WRAP_USER_HOME}" /opt/mise \
  && chmod 0755 "${WRAP_USER_HOME}"
 
 # ---------------------------------------------------------------------------
@@ -155,7 +153,6 @@ autoload -Uz compinit && compinit -u 2>/dev/null || true
 alias ls='eza --group-directories-first'
 alias ll='eza -l --git --group-directories-first'
 alias la='eza -la --git --group-directories-first'
-alias cat='cat'
 alias g=git
 EOF
 
@@ -164,7 +161,7 @@ RUN cat > /etc/wrap/skel.profile <<'EOF'
 [ -f /etc/profile.d/wrap.sh ] && . /etc/profile.d/wrap.sh
 EOF
 
-# `safe.directory = *` is deliberate: /workspace is a bind mount whose host
+# `safe.directory = *` is deliberate: the project is a bind mount whose host
 # owner uid frequently differs from the in-container uid, and git otherwise
 # aborts every command with "detected dubious ownership in repository".
 RUN cat > /etc/wrap/skel.gitconfig <<'EOF'
@@ -272,9 +269,13 @@ EOF
 RUN chmod 0755 /opt/wrap/bin/wrap-entrypoint
 
 # Image defaults describe the identity the workload actually runs as.
+# ~/.local/bin is where curl-installed agent CLIs (cursor-agent, claude) land;
+# appended so non-login processes (docker exec, daemons) find them without
+# letting them shadow system commands.
 ENV HOME=/home/user \
-    USER=user
+    USER=user \
+    PATH=${PATH}:/home/user/.local/bin
 
-WORKDIR /workspace
+WORKDIR /home/user/workspace
 ENTRYPOINT ["/opt/wrap/bin/wrap-entrypoint"]
 CMD ["/bin/zsh", "-l"]
